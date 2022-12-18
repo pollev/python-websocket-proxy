@@ -74,6 +74,7 @@ class HttpProxy(BaseHTTPRequestHandler):
             self.cacert = pathlib.Path(__file__).parent.joinpath("certs/ca.crt")
             self.certkey = pathlib.Path(__file__).parent.joinpath("certs/cert.key")
             self.certdir = pathlib.Path(__file__).parent.joinpath("certs/specific_certs/")
+            self.extensionfile = pathlib.Path(__file__).parent.joinpath("certs/extfile.tmp")
         self.tls = threading.local()
         self.tls.conns = {}
 
@@ -92,8 +93,9 @@ class HttpProxy(BaseHTTPRequestHandler):
         with self.lock:
             if not specific_cert.is_file():
                 epoch = "%d" % (time.time() * 1000)
-                p1 = Popen(["openssl", "req", "-new", "-key", self.certkey, "-subj", "/CN=%s" % hostname], stdout=PIPE)
-                p2 = Popen(["openssl", "x509", "-req", "-days", "3650", "-CA", self.cacert, "-CAkey", self.cakey, "-set_serial", epoch, "-out", specific_cert], stdin=p1.stdout, stderr=PIPE)
+                self.extensionfile.write_text("subjectAltName=DNS:%s" % hostname)
+                p1 = Popen(["openssl", "req", "-new", "-key", self.certkey, "-subj", "/CN=%s" % hostname, "-addext", "subjectAltName = DNS:%s" % hostname], stdout=PIPE)
+                p2 = Popen(["openssl", "x509", "-req", "-extfile", self.extensionfile, "-days", "365", "-CA", self.cacert, "-CAkey", self.cakey, "-set_serial", epoch, "-out", specific_cert], stdin=p1.stdout, stderr=PIPE)
                 p2.communicate()
 
         self.wfile.write(("%s %d %s\r\n" % (self.protocol_version, 200, 'Connection Established')).encode())
@@ -101,7 +103,10 @@ class HttpProxy(BaseHTTPRequestHandler):
             self._headers_buffer = []
         self.end_headers()
 
-        self.connection = ssl.wrap_socket(self.connection, keyfile=self.certkey, certfile=specific_cert, server_side=True)
+        ssl_settings = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ssl_settings.check_hostname = False
+        ssl_settings.load_cert_chain(certfile=specific_cert, keyfile=self.certkey)
+        self.connection = ssl_settings.wrap_socket(self.connection, server_side=True)
         self.rfile = self.connection.makefile("rb", self.rbufsize)
         self.wfile = self.connection.makefile("wb", self.wbufsize)
 
